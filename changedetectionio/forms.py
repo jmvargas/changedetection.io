@@ -480,7 +480,7 @@ class watchForm(commonSettingsForm):
 
     trigger_text = StringListField('Trigger/wait for text', [validators.Optional(), ValidateListRegex()])
     if os.getenv("PLAYWRIGHT_DRIVER_URL"):
-        browser_steps = FieldList(FormField(SingleBrowserStep), min_entries=10)
+        browser_steps = FieldList(FormField(SingleBrowserStep), min_entries=50)
     text_should_not_be_present = StringListField('Block change-detection while text matches', [validators.Optional(), ValidateListRegex()])
     webdriver_js_execute_code = TextAreaField('Execute JavaScript before change detection', render_kw={"rows": "5"}, validators=[validators.Optional()])
 
