@@ -1,11 +1,11 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import time
 from flask import url_for
 from ..util import live_server_setup, wait_for_all_checks, extract_UUID_from_client
 
 
-def test_noproxy_option(client, live_server):
+def test_noproxy_option(client, live_server, measure_memory_usage):
     live_server_setup(live_server)
     # Run by run_proxy_tests.sh
     # Call this URL then scan the containers that it never went through them
@@ -13,12 +13,12 @@ def test_noproxy_option(client, live_server):
 
     # Should only be available when a proxy is setup
     res = client.get(
-        url_for("edit_page", uuid="first", unpause_on_save=1))
+        url_for("ui.ui_edit.edit_page", uuid="first", unpause_on_save=1))
     assert b'No proxy' not in res.data
 
     # Setup a proxy
     res = client.post(
-        url_for("settings_page"),
+        url_for("settings.settings_page"),
         data={
             "requests-time_between_check-minutes": 180,
             "application-ignore_whitespace": "y",
@@ -37,24 +37,24 @@ def test_noproxy_option(client, live_server):
 
     # Should be available as an option
     res = client.get(
-        url_for("settings_page", unpause_on_save=1))
+        url_for("settings.settings_page", unpause_on_save=1))
     assert b'No proxy' in res.data
 
 
     # This will add it paused
     res = client.post(
-        url_for("form_quick_watch_add"),
+        url_for("ui.ui_views.form_quick_watch_add"),
         data={"url": url, "tags": '', 'edit_and_watch_submit_button': 'Edit > Watch'},
         follow_redirects=True
     )
     assert b"Watch added in Paused state, saving will unpause" in res.data
-    uuid = extract_UUID_from_client(client)
+    uuid = next(iter(live_server.app.config['DATASTORE'].data['watching']))
     res = client.get(
-        url_for("edit_page", uuid=uuid, unpause_on_save=1))
+        url_for("ui.ui_edit.edit_page", uuid=uuid, unpause_on_save=1))
     assert b'No proxy' in res.data
 
     res = client.post(
-        url_for("edit_page", uuid=uuid, unpause_on_save=1),
+        url_for("ui.ui_edit.edit_page", uuid=uuid, unpause_on_save=1),
         data={
                 "include_filters": "",
                 "fetch_backend": "html_requests",
@@ -67,7 +67,7 @@ def test_noproxy_option(client, live_server):
     )
     assert b"unpaused" in res.data
     wait_for_all_checks(client)
-    client.get(url_for("form_watch_checknow"), follow_redirects=True)
+    client.get(url_for("ui.form_watch_checknow"), follow_redirects=True)
     wait_for_all_checks(client)
     # Now the request should NOT appear in the second-squid logs (handled by the run_test_proxies.sh script)
 

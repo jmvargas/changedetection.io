@@ -1,8 +1,12 @@
-import apprise
+
 import time
 from apprise import NotifyFormat
-import json
+import apprise
 from loguru import logger
+
+from .apprise_plugin.assets import APPRISE_AVATAR_URL
+from .apprise_plugin.custom_handlers import apprise_http_custom_handler  # noqa: F401
+from .safe_jinja import render as jinja_render
 
 valid_tokens = {
     'base_url': '',
@@ -22,7 +26,7 @@ valid_tokens = {
 }
 
 default_notification_format_for_watch = 'System default'
-default_notification_format = 'Text'
+default_notification_format = 'HTML Color'
 default_notification_body = '{{watch_url}} had a change.\n---\n{{diff}}\n---\n'
 default_notification_title = 'ChangeDetection.io Notification - {{watch_url}}'
 
@@ -30,92 +34,14 @@ valid_notification_formats = {
     'Text': NotifyFormat.TEXT,
     'Markdown': NotifyFormat.MARKDOWN,
     'HTML': NotifyFormat.HTML,
+    'HTML Color': 'htmlcolor',
     # Used only for editing a watch (not for global)
     default_notification_format_for_watch: default_notification_format_for_watch
 }
 
-# include the decorator
-from apprise.decorators import notify
-
-@notify(on="delete")
-@notify(on="deletes")
-@notify(on="get")
-@notify(on="gets")
-@notify(on="post")
-@notify(on="posts")
-@notify(on="put")
-@notify(on="puts")
-def apprise_custom_api_call_wrapper(body, title, notify_type, *args, **kwargs):
-    import requests
-    from apprise.utils import parse_url as apprise_parse_url
-    from apprise import URLBase
-
-    url = kwargs['meta'].get('url')
-
-    if url.startswith('post'):
-        r = requests.post
-    elif url.startswith('get'):
-        r = requests.get
-    elif url.startswith('put'):
-        r = requests.put
-    elif url.startswith('delete'):
-        r = requests.delete
-
-    url = url.replace('post://', 'http://')
-    url = url.replace('posts://', 'https://')
-    url = url.replace('put://', 'http://')
-    url = url.replace('puts://', 'https://')
-    url = url.replace('get://', 'http://')
-    url = url.replace('gets://', 'https://')
-    url = url.replace('put://', 'http://')
-    url = url.replace('puts://', 'https://')
-    url = url.replace('delete://', 'http://')
-    url = url.replace('deletes://', 'https://')
-
-    headers = {}
-    params = {}
-    auth = None
-
-    # Convert /foobar?+some-header=hello to proper header dictionary
-    results = apprise_parse_url(url)
-    if results:
-        # Add our headers that the user can potentially over-ride if they wish
-        # to to our returned result set and tidy entries by unquoting them
-        headers = {URLBase.unquote(x): URLBase.unquote(y)
-                   for x, y in results['qsd+'].items()}
-
-        # https://github.com/caronc/apprise/wiki/Notify_Custom_JSON#get-parameter-manipulation
-        # In Apprise, it relies on prefixing each request arg with "-", because it uses say &method=update as a flag for apprise
-        # but here we are making straight requests, so we need todo convert this against apprise's logic
-        for k, v in results['qsd'].items():
-            if not k.strip('+-') in results['qsd+'].keys():
-                params[URLBase.unquote(k)] = URLBase.unquote(v)
-
-        # Determine Authentication
-        auth = ''
-        if results.get('user') and results.get('password'):
-            auth = (URLBase.unquote(results.get('user')), URLBase.unquote(results.get('user')))
-        elif results.get('user'):
-            auth = (URLBase.unquote(results.get('user')))
-
-    # Try to auto-guess if it's JSON
-    try:
-        json.loads(body)
-        headers['Content-Type'] = 'application/json; charset=utf-8'
-    except ValueError as e:
-        pass
-
-    r(results.get('url'),
-      auth=auth,
-      data=body,
-      headers=headers,
-      params=params
-      )
 
 
 def process_notification(n_object, datastore):
-
-    from .safe_jinja import render as jinja_render
     now = time.time()
     if n_object.get('notification_timestamp'):
         logger.trace(f"Time since queued {now-n_object['notification_timestamp']:.3f}s")
@@ -139,8 +65,12 @@ def process_notification(n_object, datastore):
     # raise it as an exception
 
     sent_objs = []
-    from .apprise_asset import asset
-    apobj = apprise.Apprise(debug=True, asset=asset)
+    from .apprise_plugin.assets import apprise_asset
+
+    if 'as_async' in n_object:
+        apprise_asset.async_mode = n_object.get('as_async')
+
+    apobj = apprise.Apprise(debug=True, asset=apprise_asset)
 
     if not n_object.get('notification_urls'):
         return None
@@ -150,14 +80,21 @@ def process_notification(n_object, datastore):
 
             # Get the notification body from datastore
             n_body = jinja_render(template_str=n_object.get('notification_body', ''), **notification_parameters)
+            if n_object.get('notification_format', '').startswith('HTML'):
+                n_body = n_body.replace("\n", '<br>')
+
             n_title = jinja_render(template_str=n_object.get('notification_title', ''), **notification_parameters)
 
             url = url.strip()
+            if url.startswith('#'):
+                logger.trace(f"Skipping commented out notification URL - {url}")
+                continue
+
             if not url:
                 logger.warning(f"Process Notification: skipping empty notification URL.")
                 continue
 
-            logger.info(">> Process Notification: AppRise notifying {}".format(url))
+            logger.info(f">> Process Notification: AppRise notifying {url}")
             url = jinja_render(template_str=url, **notification_parameters)
 
             # Re 323 - Limit discord length to their 2000 char limit total or it wont send.
@@ -174,7 +111,7 @@ def process_notification(n_object, datastore):
                     and not url.startswith('get') \
                     and not url.startswith('delete') \
                     and not url.startswith('put'):
-                url += k + 'avatar_url=https://raw.githubusercontent.com/dgtlmoon/changedetection.io/master/changedetectionio/static/images/avatar-256x256.png'
+                url += k + f"avatar_url={APPRISE_AVATAR_URL}"
 
             if url.startswith('tgram://'):
                 # Telegram only supports a limit subset of HTML, remove the '<br>' we place in.
@@ -223,13 +160,12 @@ def process_notification(n_object, datastore):
             attach=n_object.get('screenshot', None)
         )
 
-        # Give apprise time to register an error
-        time.sleep(3)
 
         # Returns empty string if nothing found, multi-line string otherwise
         log_value = logs.getvalue()
 
         if log_value and 'WARNING' in log_value or 'ERROR' in log_value:
+            logger.critical(log_value)
             raise Exception(log_value)
 
     # Return what was sent for better logging - after the for loop
@@ -272,19 +208,18 @@ def create_notification_parameters(n_object, datastore):
     tokens.update(
         {
             'base_url': base_url,
-            'current_snapshot': n_object.get('current_snapshot', ''),
-            'diff': n_object.get('diff', ''),  # Null default in the case we use a test
-            'diff_added': n_object.get('diff_added', ''),  # Null default in the case we use a test
-            'diff_full': n_object.get('diff_full', ''),  # Null default in the case we use a test
-            'diff_patch': n_object.get('diff_patch', ''),  # Null default in the case we use a test
-            'diff_removed': n_object.get('diff_removed', ''),  # Null default in the case we use a test
             'diff_url': diff_url,
             'preview_url': preview_url,
-            'triggered_text': n_object.get('triggered_text', ''),
             'watch_tag': watch_tag if watch_tag is not None else '',
             'watch_title': watch_title if watch_title is not None else '',
             'watch_url': watch_url,
             'watch_uuid': uuid,
         })
+
+    # n_object will contain diff, diff_added etc etc
+    tokens.update(n_object)
+
+    if uuid:
+        tokens.update(datastore.data['watching'].get(uuid).extra_notification_token_values())
 
     return tokens

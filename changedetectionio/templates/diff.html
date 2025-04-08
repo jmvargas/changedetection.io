@@ -7,14 +7,14 @@
     const error_screenshot_url="{{url_for('static_content', group='screenshot', filename=uuid, error_screenshot=1) }}";
     {% endif %}
 
-    const highlight_submit_ignore_url="{{url_for('highlight_submit_ignore_url', uuid=uuid)}}";
+    const highlight_submit_ignore_url="{{url_for('ui.ui_edit.highlight_submit_ignore_url', uuid=uuid)}}";
 
 </script>
 <script src="{{url_for('static_content', group='js', filename='diff-overview.js')}}" defer></script>
 
 <div id="settings">
     <form class="pure-form " action="" method="GET" id="diff-form">
-        <fieldset>
+        <fieldset class="diff-fieldset">
             {% if versions|length >= 1 %}
                 <strong>Compare</strong>
                 <del class="change"><span>from</span></del>
@@ -33,7 +33,7 @@
                         </option>
                     {% endfor %}
                 </select>
-                <button type="submit" class="pure-button pure-button-primary">Go</button>
+                <button type="submit" class="pure-button pure-button-primary reset-margin">Go</button>
             {% endif %}
         </fieldset>
         <fieldset>
@@ -125,7 +125,7 @@
      </div>
     <div class="tab-pane-inner" id="extract">
         <form id="extract-data-form" class="pure-form pure-form-stacked edit-form"
-              action="{{ url_for('diff_history_page', uuid=uuid) }}#extract"
+              action="{{ url_for('ui.ui_views.diff_history_page', uuid=uuid) }}#extract"
               method="POST">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 

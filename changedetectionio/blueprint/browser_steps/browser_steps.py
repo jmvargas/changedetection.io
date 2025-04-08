@@ -1,13 +1,14 @@
-#!/usr/bin/python3
-
 import os
 import time
 import re
 from random import randint
 from loguru import logger
 
+from changedetectionio.content_fetchers.helpers import capture_stitched_together_full_page, SCREENSHOT_SIZE_STITCH_THRESHOLD
 from changedetectionio.content_fetchers.base import manage_user_agent
 from changedetectionio.safe_jinja import render as jinja_render
+
+
 
 # Two flags, tell the JS which of the "Selector" or "Value" field should be enabled in the front end
 # 0- off, 1- on
@@ -25,11 +26,13 @@ browser_step_ui_config = {'Choose one': '0 0',
                           'Click element if exists': '1 0',
                           'Click element': '1 0',
                           'Click element containing text': '0 1',
+                          'Click element containing text if exists': '0 1',
                           'Enter text in field': '1 1',
                           'Execute JS': '0 1',
 #                          'Extract text and use as filter': '1 0',
                           'Goto site': '0 0',
                           'Goto URL': '0 1',
+                          'Make all child elements visible': '1 0',
                           'Press Enter': '0 0',
                           'Select by label': '1 1',
                           'Scroll down': '0 0',
@@ -37,6 +40,7 @@ browser_step_ui_config = {'Choose one': '0 0',
                           'Wait for seconds': '0 1',
                           'Wait for text': '0 1',
                           'Wait for text in element': '1 1',
+                          'Remove elements': '1 0',
                           #                          'Press Page Down': '0 0',
                           #                          'Press Page Up': '0 0',
                           # weird bug, come back to it later
@@ -50,6 +54,8 @@ browser_step_ui_config = {'Choose one': '0 0',
 class steppable_browser_interface():
     page = None
     start_url = None
+
+    action_timeout = 10 * 1000
 
     def __init__(self, start_url):
         self.start_url = start_url
@@ -96,17 +102,29 @@ class steppable_browser_interface():
         return self.action_goto_url(value=self.start_url)
 
     def action_click_element_containing_text(self, selector=None, value=''):
+        logger.debug("Clicking element containing text")
         if not len(value.strip()):
             return
         elem = self.page.get_by_text(value)
         if elem.count():
-            elem.first.click(delay=randint(200, 500), timeout=3000)
+            elem.first.click(delay=randint(200, 500), timeout=self.action_timeout)
+
+    def action_click_element_containing_text_if_exists(self, selector=None, value=''):
+        logger.debug("Clicking element containing text if exists")
+        if not len(value.strip()):
+            return
+        elem = self.page.get_by_text(value)
+        logger.debug(f"Clicking element containing text - {elem.count()} elements found")
+        if elem.count():
+            elem.first.click(delay=randint(200, 500), timeout=self.action_timeout)
+        else:
+            return
 
     def action_enter_text_in_field(self, selector, value):
         if not len(selector.strip()):
             return
 
-        self.page.fill(selector, value, timeout=10 * 1000)
+        self.page.fill(selector, value, timeout=self.action_timeout)
 
     def action_execute_js(self, selector, value):
         response = self.page.evaluate(value)
@@ -117,7 +135,7 @@ class steppable_browser_interface():
         if not len(selector.strip()):
             return
 
-        self.page.click(selector=selector, timeout=30 * 1000, delay=randint(200, 500))
+        self.page.click(selector=selector, timeout=self.action_timeout + 20 * 1000, delay=randint(200, 500))
 
     def action_click_element_if_exists(self, selector, value):
         import playwright._impl._errors as _api_types
@@ -125,7 +143,7 @@ class steppable_browser_interface():
         if not len(selector.strip()):
             return
         try:
-            self.page.click(selector, timeout=10 * 1000, delay=randint(200, 500))
+            self.page.click(selector, timeout=self.action_timeout, delay=randint(200, 500))
         except _api_types.TimeoutError as e:
             return
         except _api_types.Error as e:
@@ -172,11 +190,29 @@ class steppable_browser_interface():
         self.page.keyboard.press("PageDown", delay=randint(200, 500))
 
     def action_check_checkbox(self, selector, value):
-        self.page.locator(selector).check(timeout=1000)
+        self.page.locator(selector).check(timeout=self.action_timeout)
 
     def action_uncheck_checkbox(self, selector, value):
-        self.page.locator(selector, timeout=1000).uncheck(timeout=1000)
+        self.page.locator(selector).uncheck(timeout=self.action_timeout)
 
+    def action_remove_elements(self, selector, value):
+        """Removes all elements matching the given selector from the DOM."""
+        self.page.locator(selector).evaluate_all("els => els.forEach(el => el.remove())")
+
+    def action_make_all_child_elements_visible(self, selector, value):
+        """Recursively makes all child elements inside the given selector fully visible."""
+        self.page.locator(selector).locator("*").evaluate_all("""
+            els => els.forEach(el => {
+                el.style.display = 'block';   // Forces it to be displayed
+                el.style.visibility = 'visible';   // Ensures it's not hidden
+                el.style.opacity = '1';   // Fully opaque
+                el.style.position = 'relative';   // Avoids 'absolute' hiding
+                el.style.height = 'auto';   // Expands collapsed elements
+                el.style.width = 'auto';   // Ensures full visibility
+                el.removeAttribute('hidden');   // Removes hidden attribute
+                el.classList.remove('hidden', 'd-none');  // Removes common CSS hidden classes
+            })
+        """)
 
 # Responsible for maintaining a live 'context' with the chrome CDP
 # @todo - how long do contexts live for anyway?
@@ -244,6 +280,7 @@ class browsersteps_live_ui(steppable_browser_interface):
         logger.debug(f"Time to browser setup {time.time()-now:.2f}s")
         self.page.wait_for_timeout(1 * 1000)
 
+
     def mark_as_closed(self):
         logger.debug("Page closed, cleaning up..")
 
@@ -255,46 +292,36 @@ class browsersteps_live_ui(steppable_browser_interface):
 
     def get_current_state(self):
         """Return the screenshot and interactive elements mapping, generally always called after action_()"""
-        from pkg_resources import resource_string
-        xpath_element_js = resource_string(__name__, "../../content_fetchers/res/xpath_element_scraper.js").decode('utf-8')
+        import importlib.resources
+        xpath_element_js = importlib.resources.files("changedetectionio.content_fetchers.res").joinpath('xpath_element_scraper.js').read_text()
+
         now = time.time()
         self.page.wait_for_timeout(1 * 1000)
 
-        # The actual screenshot
-        screenshot = self.page.screenshot(type='jpeg', full_page=True, quality=40)
 
+        full_height = self.page.evaluate("document.documentElement.scrollHeight")
+
+        if full_height >= SCREENSHOT_SIZE_STITCH_THRESHOLD:
+            logger.warning(f"Page full Height: {full_height}px longer than {SCREENSHOT_SIZE_STITCH_THRESHOLD}px, using 'stitched screenshot method'.")
+            screenshot = capture_stitched_together_full_page(self.page)
+        else:
+            screenshot = self.page.screenshot(type='jpeg', full_page=True, quality=40)
+
+        logger.debug(f"Time to get screenshot from browser {time.time() - now:.2f}s")
+
+        now = time.time()
         self.page.evaluate("var include_filters=''")
         # Go find the interactive elements
         # @todo in the future, something smarter that can scan for elements with .click/focus etc event handlers?
         elements = 'a,button,input,select,textarea,i,th,td,p,li,h1,h2,h3,h4,div,span'
         xpath_element_js = xpath_element_js.replace('%ELEMENTS%', elements)
+
         xpath_data = self.page.evaluate("async () => {" + xpath_element_js + "}")
         # So the JS will find the smallest one first
         xpath_data['size_pos'] = sorted(xpath_data['size_pos'], key=lambda k: k['width'] * k['height'], reverse=True)
-        logger.debug(f"Time to complete get_current_state of browser {time.time()-now:.2f}s")
-        # except
+        logger.debug(f"Time to scrape xpath element data in browser {time.time()-now:.2f}s")
+
         # playwright._impl._api_types.Error: Browser closed.
         # @todo show some countdown timer?
         return (screenshot, xpath_data)
 
-    def request_visualselector_data(self):
-        """
-        Does the same that the playwright operation in content_fetcher does
-        This is used to just bump the VisualSelector data so it' ready to go if they click on the tab
-        @todo refactor and remove duplicate code, add include_filters
-        :param xpath_data:
-        :param screenshot:
-        :param current_include_filters:
-        :return:
-        """
-
-        self.page.evaluate("var include_filters=''")
-        from pkg_resources import resource_string
-        # The code that scrapes elements and makes a list of elements/size/position to click on in the VisualSelector
-        xpath_element_js = resource_string(__name__, "../../content_fetchers/res/xpath_element_scraper.js").decode('utf-8')
-        from changedetectionio.content_fetchers import visualselector_xpath_selectors
-        xpath_element_js = xpath_element_js.replace('%ELEMENTS%', visualselector_xpath_selectors)
-        xpath_data = self.page.evaluate("async () => {" + xpath_element_js + "}")
-        screenshot = self.page.screenshot(type='jpeg', full_page=True, quality=int(os.getenv("SCREENSHOT_QUALITY", 72)))
-
-        return (screenshot, xpath_data)

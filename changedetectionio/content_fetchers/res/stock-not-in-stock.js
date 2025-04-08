@@ -29,45 +29,77 @@ function isItemInStock() {
         'currently unavailable',
         'dieser artikel ist bald wieder verfügbar',
         'dostępne wkrótce',
+        'en rupture',
         'en rupture de stock',
-        'ist derzeit nicht auf lager',
+        'épuisé',
+        'esgotado',
+        'indisponible',
+        'indisponível',
+        'isn\'t in stock right now',
+        'isnt in stock right now',
+        'isn’t in stock right now',
         'item is no longer available',
         'let me know when it\'s available',
+        'mail me when available',
         'message if back in stock',
+        'mevcut değil',
         'nachricht bei',
         'nicht auf lager',
+        'nicht lagernd',
         'nicht lieferbar',
+        'nicht verfügbar',
+        'nicht vorrätig',
         'nicht zur verfügung',
+        'nie znaleziono produktów',
         'niet beschikbaar',
         'niet leverbaar',
         'niet op voorraad',
-        'no disponible temporalmente',
+        'no disponible',
+        'non disponibile',
+        'non disponible',
         'no longer in stock',
         'no tickets available',
         'not available',
         'not currently available',
         'not in stock',
         'notify me when available',
+        'notify me',
         'notify when available',
+        'não disponível',
         'não estamos a aceitar encomendas',
         'out of stock',
         'out-of-stock',
+        'plus disponible',
         'prodotto esaurito',
         'produkt niedostępny',
+        'rupture',
         'sold out',
         'sold-out',
+        'stok habis',
+        'stok kosong',
+        'stok varian ini habis',
+        'stokta yok',
         'temporarily out of stock',
         'temporarily unavailable',
         'there were no search results for',
         'this item is currently unavailable',
         'tickets unavailable',
+        'tidak dijual',
+        'tidak tersedia',
         'tijdelijk uitverkocht',
+        'tiket tidak tersedia',
+        'tükendi',
+        'unavailable nearby',
         'unavailable tickets',
+        'vergriffen',
+        'vorbestellen',
         'vorbestellung ist bald möglich',
+        'we don\'t currently have any',
         'we couldn\'t find any products that match',
         'we do not currently have an estimate of when this product will be back in stock.',
         'we don\'t know when or if this item will be back in stock.',
         'we were not able to find a match',
+        'when this arrives in stock',
         'zur zeit nicht an lager',
         '品切れ',
         '已售',
@@ -141,10 +173,14 @@ function isItemInStock() {
         }
 
         elementText = "";
-        if (element.tagName.toLowerCase() === "input") {
-            elementText = element.value.toLowerCase().trim();
-        } else {
-            elementText = getElementBaseText(element);
+        try {
+            if (element.tagName.toLowerCase() === "input") {
+                elementText = element.value.toLowerCase().trim();
+            } else {
+                elementText = getElementBaseText(element);
+            }
+        } catch (e) {
+            console.warn('stock-not-in-stock.js scraper - handling element for gettext failed', e);
         }
 
         if (elementText.length) {
@@ -161,7 +197,8 @@ function isItemInStock() {
         const element = elementsToScan[i];
         // outside the 'fold' or some weird text in the heading area
         // .getBoundingClientRect() was causing a crash in chrome 119, can only be run on contentVisibility != hidden
-        if (element.getBoundingClientRect().top + window.scrollY >= vh + 150 || element.getBoundingClientRect().top + window.scrollY <= 100) {
+        // Note: theres also an automated test that places the 'out of stock' text fairly low down
+        if (element.getBoundingClientRect().top + window.scrollY >= vh + 250 || element.getBoundingClientRect().top + window.scrollY <= 100) {
             continue
         }
         elementText = "";
@@ -175,7 +212,7 @@ function isItemInStock() {
             // and these mean its out of stock
             for (const outOfStockText of outOfStockTexts) {
                 if (elementText.includes(outOfStockText)) {
-                    console.log(`Selected 'Out of Stock' - found text "${outOfStockText}" - "${elementText}"`)
+                    console.log(`Selected 'Out of Stock' - found text "${outOfStockText}" - "${elementText}" - offset top ${element.getBoundingClientRect().top}, page height is ${vh}`)
                     return outOfStockText; // item is out of stock
                 }
             }

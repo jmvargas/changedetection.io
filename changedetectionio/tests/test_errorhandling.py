@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import time
 
@@ -23,7 +23,7 @@ def _runner_test_http_errors(client, live_server, http_code, expected_text):
                        _external=True)
 
     res = client.post(
-        url_for("import_page"),
+        url_for("imports.import_page"),
         data={"urls": test_url},
         follow_redirects=True
     )
@@ -32,7 +32,7 @@ def _runner_test_http_errors(client, live_server, http_code, expected_text):
     # Give the thread time to pick it up
     wait_for_all_checks(client)
 
-    res = client.get(url_for("index"))
+    res = client.get(url_for("watchlist.index"))
     # no change
     assert b'unviewed' not in res.data
     assert bytes(expected_text.encode('utf-8')) in res.data
@@ -40,7 +40,7 @@ def _runner_test_http_errors(client, live_server, http_code, expected_text):
 
     # Error viewing tabs should appear
     res = client.get(
-        url_for("preview_page", uuid="first"),
+        url_for("ui.ui_views.preview_page", uuid="first"),
         follow_redirects=True
     )
 
@@ -50,26 +50,26 @@ def _runner_test_http_errors(client, live_server, http_code, expected_text):
     #assert b'Error Screenshot' in res.data
 
 
-    res = client.get(url_for("form_delete", uuid="all"), follow_redirects=True)
+    res = client.get(url_for("ui.form_delete", uuid="all"), follow_redirects=True)
     assert b'Deleted' in res.data
 
 
-def test_http_error_handler(client, live_server):
+def test_http_error_handler(client, live_server, measure_memory_usage):
     _runner_test_http_errors(client, live_server, 403, 'Access denied')
     _runner_test_http_errors(client, live_server, 404, 'Page not found')
     _runner_test_http_errors(client, live_server, 500, '(Internal server error) received')
     _runner_test_http_errors(client, live_server, 400, 'Error - Request returned a HTTP error code 400')
-    res = client.get(url_for("form_delete", uuid="all"), follow_redirects=True)
+    res = client.get(url_for("ui.form_delete", uuid="all"), follow_redirects=True)
     assert b'Deleted' in res.data
 
 # Just to be sure error text is properly handled
-def test_DNS_errors(client, live_server):
+def test_DNS_errors(client, live_server, measure_memory_usage):
     # Give the endpoint time to spin up
     time.sleep(1)
 
     # Add our URL to the import page
     res = client.post(
-        url_for("import_page"),
+        url_for("imports.import_page"),
         data={"urls": "https://errorfuldomainthatnevereallyexists12356.com"},
         follow_redirects=True
     )
@@ -78,16 +78,16 @@ def test_DNS_errors(client, live_server):
     # Give the thread time to pick it up
     wait_for_all_checks(client)
 
-    res = client.get(url_for("index"))
+    res = client.get(url_for("watchlist.index"))
     found_name_resolution_error = b"Temporary failure in name resolution" in res.data or b"Name or service not known" in res.data
     assert found_name_resolution_error
     # Should always record that we tried
     assert bytes("just now".encode('utf-8')) in res.data
-    res = client.get(url_for("form_delete", uuid="all"), follow_redirects=True)
+    res = client.get(url_for("ui.form_delete", uuid="all"), follow_redirects=True)
     assert b'Deleted' in res.data
 
 # Re 1513
-def test_low_level_errors_clear_correctly(client, live_server):
+def test_low_level_errors_clear_correctly(client, live_server, measure_memory_usage):
     #live_server_setup(live_server)
     # Give the endpoint time to spin up
     time.sleep(1)
@@ -99,7 +99,7 @@ def test_low_level_errors_clear_correctly(client, live_server):
     test_url = url_for('test_endpoint', _external=True)
 
     res = client.post(
-        url_for("import_page"),
+        url_for("imports.import_page"),
         data={"urls": "https://dfkjasdkfjaidjfsdajfksdajfksdjfDOESNTEXIST.com"},
         follow_redirects=True
     )
@@ -107,13 +107,13 @@ def test_low_level_errors_clear_correctly(client, live_server):
     wait_for_all_checks(client)
 
     # We should see the DNS error
-    res = client.get(url_for("index"))
+    res = client.get(url_for("watchlist.index"))
     found_name_resolution_error = b"Temporary failure in name resolution" in res.data or b"Name or service not known" in res.data
     assert found_name_resolution_error
 
     # Update with what should work
     client.post(
-        url_for("edit_page", uuid="first"),
+        url_for("ui.ui_edit.edit_page", uuid="first"),
         data={
             "url": test_url,
             "fetch_backend": "html_requests"},
@@ -122,9 +122,9 @@ def test_low_level_errors_clear_correctly(client, live_server):
 
     # Now the error should be gone
     wait_for_all_checks(client)
-    res = client.get(url_for("index"))
+    res = client.get(url_for("watchlist.index"))
     found_name_resolution_error = b"Temporary failure in name resolution" in res.data or b"Name or service not known" in res.data
     assert not found_name_resolution_error
 
-    res = client.get(url_for("form_delete", uuid="all"), follow_redirects=True)
+    res = client.get(url_for("ui.form_delete", uuid="all"), follow_redirects=True)
     assert b'Deleted' in res.data

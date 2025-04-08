@@ -1,8 +1,8 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 # Read more https://github.com/dgtlmoon/changedetection.io/wiki
 
-__version__ = '0.45.23'
+__version__ = '0.49.12'
 
 from changedetectionio.strtobool import strtobool
 from json.decoder import JSONDecodeError
@@ -11,6 +11,7 @@ os.environ['EVENTLET_NO_GREENDNS'] = 'yes'
 import eventlet
 import eventlet.wsgi
 import getopt
+import platform
 import signal
 import socket
 import sys
@@ -19,15 +20,15 @@ from changedetectionio import store
 from changedetectionio.flask_app import changedetection_app
 from loguru import logger
 
-
 # Only global so we can access it in the signal handler
 app = None
 datastore = None
 
+def get_version():
+    return __version__
+
 # Parent wrapper or OS sends us a SIGTERM/SIGINT, do everything required for a clean shutdown
 def sigshutdown_handler(_signo, _stack_frame):
-    global app
-    global datastore
     name = signal.Signals(_signo).name
     logger.critical(f'Shutdown: Got Signal - {name} ({_signo}), Saving DB to disk and calling shutdown')
     datastore.sync_to_json()
@@ -144,6 +145,19 @@ def main():
 
     signal.signal(signal.SIGTERM, sigshutdown_handler)
     signal.signal(signal.SIGINT, sigshutdown_handler)
+    
+    # Custom signal handler for memory cleanup
+    def sigusr_clean_handler(_signo, _stack_frame):
+        from changedetectionio.gc_cleanup import memory_cleanup
+        logger.info('SIGUSR1 received: Running memory cleanup')
+        return memory_cleanup(app)
+
+    # Register the SIGUSR1 signal handler
+    # Only register the signal handler if running on Linux
+    if platform.system() == "Linux":
+        signal.signal(signal.SIGUSR1, sigusr_clean_handler)
+    else:
+        logger.info("SIGUSR1 handler only registered on Linux, skipped.")
 
     # Go into cleanup mode
     if do_cleanup:
@@ -160,11 +174,10 @@ def main():
                     )
 
     # Monitored websites will not receive a Referer header when a user clicks on an outgoing link.
-    # @Note: Incompatible with password login (and maybe other features) for now, submit a PR!
     @app.after_request
     def hide_referrer(response):
         if strtobool(os.getenv("HIDE_REFERER", 'false')):
-            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Referrer-Policy"] = "same-origin"
 
         return response
 

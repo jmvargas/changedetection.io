@@ -1,4 +1,3 @@
-version: '3.2'
 services:
     changedetection:
       image: ghcr.io/dgtlmoon/changedetection.io
@@ -12,13 +11,10 @@ services:
   #    environment:
   #        Default listening port, can also be changed with the -p option
   #      - PORT=5000
-
-  #      - PUID=1000
-  #      - PGID=1000
   #
   #        Log levels are in descending order. (TRACE is the most detailed one)
   #        Log output levels: TRACE, DEBUG(default), INFO, SUCCESS, WARNING, ERROR, CRITICAL
-  #      - LOGGER_LEVEL=DEBUG
+  #      - LOGGER_LEVEL=TRACE
   #
   #       Alternative WebDriver/selenium URL, do not use "'s or 's!
   #      - WEBDRIVER_URL=http://browser-chrome:4444/wd/hub
@@ -29,8 +25,9 @@ services:
   #
   #             https://selenium-python.readthedocs.io/api.html#module-selenium.webdriver.common.proxy
   #
-  #       Alternative Playwright URL, do not use "'s or 's!
-  #      - PLAYWRIGHT_DRIVER_URL=ws://playwright-chrome:3000
+  #       Alternative target "Chrome" Playwright URL, do not use "'s or 's!
+  #       "Playwright" is a driver/librarythat allows changedetection to talk to a Chrome or similar browser.
+  #      - PLAYWRIGHT_DRIVER_URL=ws://sockpuppetbrowser:3000
   #
   #       Playwright proxy settings playwright_proxy_server, playwright_proxy_bypass, playwright_proxy_username, playwright_proxy_password
   #
@@ -57,6 +54,16 @@ services:
   #
   #        Absolute minimum seconds to recheck, overrides any watch minimum, change to 0 to disable
   #      - MINIMUM_SECONDS_RECHECK_TIME=3
+  #
+  #        If you want to watch local files file:///path/to/file.txt (careful! security implications!)
+  #      - ALLOW_FILE_URI=False
+  #
+  #        For complete privacy if you don't want to use the 'check version' / telemetry service
+  #      - DISABLE_VERSION_CHECK=true
+  #
+  #        A valid timezone name to run as (for scheduling watch checking) see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+  #      - TZ=America/Los_Angeles
+  
       # Comment out ports: when using behind a reverse proxy , enable networks: etc.
       ports:
         - 5000:5000
@@ -68,14 +75,15 @@ services:
      
      # If WEBDRIVER or PLAYWRIGHT are enabled, changedetection container depends on that
      # and must wait before starting (substitute "browser-chrome" with "playwright-chrome" if last one is used)
-#    depends_on:
-#        browser-chrome:
-#            condition: service_started
+#      depends_on:
+#          sockpuppetbrowser:
+#              condition: service_started
 
-     # Used for fetching pages via Playwright+Chrome where you need Javascript support.
-     # RECOMMENDED FOR FETCHING PAGES WITH CHROME
-#    playwright-chrome:
-#        hostname: playwright-chrome
+
+     # Sockpuppetbrowser is basically chrome wrapped in an API for allowing fast fetching of web-pages.
+     # RECOMMENDED FOR FETCHING PAGES WITH CHROME, be sure to enable the "PLAYWRIGHT_DRIVER_URL" env variable in the main changedetection container
+#    sockpuppetbrowser:
+#        hostname: sockpuppetbrowser
 #        image: dgtlmoon/sockpuppetbrowser:latest
 #        cap_add:
 #            - SYS_ADMIN

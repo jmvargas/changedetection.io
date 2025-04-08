@@ -1,10 +1,14 @@
 from abc import abstractmethod
-import os
-import hashlib
-import re
-from copy import deepcopy
+from changedetectionio.content_fetchers.base import Fetcher
 from changedetectionio.strtobool import strtobool
+from copy import deepcopy
 from loguru import logger
+import hashlib
+import importlib
+import inspect
+import os
+import pkgutil
+import re
 
 class difference_detection_processor():
 
@@ -14,28 +18,33 @@ class difference_detection_processor():
     screenshot = None
     watch = None
     xpath_data = None
+    preferred_proxy = None
 
     def __init__(self, *args, datastore, watch_uuid, **kwargs):
         super().__init__(*args, **kwargs)
         self.datastore = datastore
         self.watch = deepcopy(self.datastore.data['watching'].get(watch_uuid))
+        # Generic fetcher that should be extended (requests, playwright etc)
+        self.fetcher = Fetcher()
 
-    def call_browser(self):
+    def call_browser(self, preferred_proxy_id=None):
 
-        # Protect against file:// access
-        if re.search(r'^file://', self.watch.get('url', '').strip(), re.IGNORECASE):
+        from requests.structures import CaseInsensitiveDict
+
+        url = self.watch.link
+
+        # Protect against file:, file:/, file:// access, check the real "link" without any meta "source:" etc prepended.
+        if re.search(r'^file:', url.strip(), re.IGNORECASE):
             if not strtobool(os.getenv('ALLOW_FILE_URI', 'false')):
                 raise Exception(
                     "file:// type access is denied for security reasons."
                 )
 
-        url = self.watch.link
-
         # Requests, playwright, other browser via wss:// etc, fetch_extra_something
         prefer_fetch_backend = self.watch.get('fetch_backend', 'system')
 
         # Proxy ID "key"
-        preferred_proxy_id = self.datastore.get_preferred_proxy_for_watch(uuid=self.watch.get('uuid'))
+        preferred_proxy_id = preferred_proxy_id if preferred_proxy_id else self.datastore.get_preferred_proxy_for_watch(uuid=self.watch.get('uuid'))
 
         # Pluggable content self.fetcher
         if not prefer_fetch_backend or prefer_fetch_backend == 'system':
@@ -93,13 +102,16 @@ class difference_detection_processor():
             self.fetcher.browser_steps_screenshot_path = os.path.join(self.datastore.datastore_path, self.watch.get('uuid'))
 
         # Tweak the base config with the per-watch ones
-        request_headers = self.watch.get('headers', [])
-        request_headers.update(self.datastore.get_all_base_headers())
-        request_headers.update(self.datastore.get_all_headers_in_textfile_for_watch(uuid=self.watch.get('uuid')))
+        from changedetectionio.safe_jinja import render as jinja_render
+        request_headers = CaseInsensitiveDict()
 
         ua = self.datastore.data['settings']['requests'].get('default_ua')
         if ua and ua.get(prefer_fetch_backend):
             request_headers.update({'User-Agent': ua.get(prefer_fetch_backend)})
+
+        request_headers.update(self.watch.get('headers', {}))
+        request_headers.update(self.datastore.get_all_base_headers())
+        request_headers.update(self.datastore.get_all_headers_in_textfile_for_watch(uuid=self.watch.get('uuid')))
 
         # https://github.com/psf/requests/issues/4525
         # Requests doesnt yet support brotli encoding, so don't put 'br' here, be totally sure that the user cannot
@@ -107,9 +119,15 @@ class difference_detection_processor():
         if 'Accept-Encoding' in request_headers and "br" in request_headers['Accept-Encoding']:
             request_headers['Accept-Encoding'] = request_headers['Accept-Encoding'].replace(', br', '')
 
+        for header_name in request_headers:
+            request_headers.update({header_name: jinja_render(template_str=request_headers.get(header_name))})
+
         timeout = self.datastore.data['settings']['requests'].get('timeout')
 
         request_body = self.watch.get('body')
+        if request_body:
+            request_body = jinja_render(template_str=self.watch.get('body'))
+        
         request_method = self.watch.get('method')
         ignore_status_codes = self.watch.get('ignore_status_codes', False)
 
@@ -127,8 +145,18 @@ class difference_detection_processor():
         is_binary = self.watch.is_pdf
 
         # And here we go! call the right browser with browser-specific settings
-        self.fetcher.run(url, timeout, request_headers, request_body, request_method, ignore_status_codes, self.watch.get('include_filters'),
-                    is_binary=is_binary)
+        empty_pages_are_a_change = self.datastore.data['settings']['application'].get('empty_pages_are_a_change', False)
+
+        self.fetcher.run(url=url,
+                         timeout=timeout,
+                         request_headers=request_headers,
+                         request_body=request_body,
+                         request_method=request_method,
+                         ignore_status_codes=ignore_status_codes,
+                         current_include_filters=self.watch.get('include_filters'),
+                         is_binary=is_binary,
+                         empty_pages_are_a_change=empty_pages_are_a_change
+                         )
 
         #@todo .quit here could go on close object, so we can run JS if change-detected
         self.fetcher.quit()
@@ -136,7 +164,7 @@ class difference_detection_processor():
         # After init, call run_changedetection() which will do the actual change-detection
 
     @abstractmethod
-    def run_changedetection(self, uuid, skip_when_checksum_same=True):
+    def run_changedetection(self, watch):
         update_obj = {'last_notification_error': False, 'last_error': False}
         some_data = 'xxxxx'
         update_obj["previous_md5"] = hashlib.md5(some_data.encode('utf-8')).hexdigest()
@@ -144,8 +172,83 @@ class difference_detection_processor():
         return changed_detected, update_obj, ''.encode('utf-8')
 
 
+def find_sub_packages(package_name):
+    """
+    Find all sub-packages within the given package.
+
+    :param package_name: The name of the base package to scan for sub-packages.
+    :return: A list of sub-package names.
+    """
+    package = importlib.import_module(package_name)
+    return [name for _, name, is_pkg in pkgutil.iter_modules(package.__path__) if is_pkg]
+
+
+def find_processors():
+    """
+    Find all subclasses of DifferenceDetectionProcessor in the specified package.
+
+    :param package_name: The name of the package to scan for processor modules.
+    :return: A list of (module, class) tuples.
+    """
+    package_name = "changedetectionio.processors"  # Name of the current package/module
+
+    processors = []
+    sub_packages = find_sub_packages(package_name)
+
+    for sub_package in sub_packages:
+        module_name = f"{package_name}.{sub_package}.processor"
+        try:
+            module = importlib.import_module(module_name)
+
+            # Iterate through all classes in the module
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                if issubclass(obj, difference_detection_processor) and obj is not difference_detection_processor:
+                    processors.append((module, sub_package))
+        except (ModuleNotFoundError, ImportError) as e:
+            logger.warning(f"Failed to import module {module_name}: {e} (find_processors())")
+
+    return processors
+
+
+def get_parent_module(module):
+    module_name = module.__name__
+    if '.' not in module_name:
+        return None  # Top-level module has no parent
+    parent_module_name = module_name.rsplit('.', 1)[0]
+    try:
+        return importlib.import_module(parent_module_name)
+    except Exception as e:
+        pass
+
+    return False
+
+
+
+def get_custom_watch_obj_for_processor(processor_name):
+    from changedetectionio.model import Watch
+    watch_class = Watch.model
+    processor_classes = find_processors()
+    custom_watch_obj = next((tpl for tpl in processor_classes if tpl[1] == processor_name), None)
+    if custom_watch_obj:
+        # Parent of .processor.py COULD have its own Watch implementation
+        parent_module = get_parent_module(custom_watch_obj[0])
+        if hasattr(parent_module, 'Watch'):
+            watch_class = parent_module.Watch
+
+    return watch_class
+
+
 def available_processors():
-    from . import restock_diff, text_json_diff
-    x=[('text_json_diff', text_json_diff.name), ('restock_diff', restock_diff.name)]
-    # @todo Make this smarter with introspection of sorts.
-    return x
+    """
+    Get a list of processors by name and description for the UI elements
+    :return: A list :)
+    """
+
+    processor_classes = find_processors()
+
+    available = []
+    for package, processor_class in processor_classes:
+        available.append((processor_class, package.name))
+
+    return available
+

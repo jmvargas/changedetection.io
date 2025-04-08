@@ -1,12 +1,18 @@
 from os import getenv
+
+from changedetectionio.blueprint.rss import RSS_FORMAT_TYPES
+
 from changedetectionio.notification import (
     default_notification_body,
     default_notification_format,
     default_notification_title,
 )
 
+# Equal to or greater than this number of FilterNotFoundInResponse exceptions will trigger a filter-not-found notification
 _FILTER_FAILURE_THRESHOLD_ATTEMPTS_DEFAULT = 6
 DEFAULT_SETTINGS_HEADERS_USERAGENT='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.66 Safari/537.36'
+
+
 
 class model(dict):
     base_config = {
@@ -46,10 +52,14 @@ class model(dict):
                     'pager_size': 50,
                     'password': False,
                     'render_anchor_tag_content': False,
+                    'rss_access_token': None,
+                    'rss_content_format': RSS_FORMAT_TYPES[0][0],
+                    'rss_hide_muted_watches': True,
                     'schema_version' : 0,
                     'shared_diff_access': False,
                     'webdriver_delay': None , # Extra delay in seconds before extracting text
-                    'tags': {} #@todo use Tag.model initialisers
+                    'tags': {}, #@todo use Tag.model initialisers
+                    'timezone': None, # Default IANA timezone name
                 }
             }
         }
@@ -65,7 +75,7 @@ def parse_headers_from_text_file(filepath):
         for l in f.readlines():
             l = l.strip()
             if not l.startswith('#') and ':' in l:
-                (k, v) = l.split(':')
+                (k, v) = l.split(':', 1)  # Split only on the first colon
                 headers[k.strip()] = v.strip()
 
     return headers

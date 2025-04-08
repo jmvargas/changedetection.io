@@ -41,7 +41,7 @@ const findUpTag = (el) => {
 
     //  Strategy 1: If it's an input, with name, and there's only one, prefer that
     if (el.name !== undefined && el.name.length) {
-        var proposed = el.tagName + "[name=" + el.name + "]";
+        var proposed = el.tagName + "[name=\"" + CSS.escape(el.name) + "\"]";
         var proposed_element = window.document.querySelectorAll(proposed);
         if (proposed_element.length) {
             if (proposed_element.length === 1) {
@@ -102,13 +102,15 @@ function collectVisibleElements(parent, visibleElements) {
     const children = parent.children;
     for (let i = 0; i < children.length; i++) {
         const child = children[i];
+        const computedStyle = window.getComputedStyle(child);
+
         if (
             child.nodeType === Node.ELEMENT_NODE &&
-            window.getComputedStyle(child).display !== 'none' &&
-            window.getComputedStyle(child).visibility !== 'hidden' &&
+            computedStyle.display !== 'none' &&
+            computedStyle.visibility !== 'hidden' &&
             child.offsetWidth >= 0 &&
             child.offsetHeight >= 0 &&
-            window.getComputedStyle(child).contentVisibility !== 'hidden'
+            computedStyle.contentVisibility !== 'hidden'
         ) {
             // If the child is an element and is visible, recursively collect visible elements
             collectVisibleElements(child, visibleElements);
@@ -164,6 +166,16 @@ visibleElementsArray.forEach(function (element) {
         }
     }
 
+    let label = "not-interesting" // A placeholder, the actual labels for training are done by hand for now
+
+    let text = element.textContent.trim().slice(0, 30).trim();
+    while (/\n{2,}|\t{2,}/.test(text)) {
+        text = text.replace(/\n{2,}/g, '\n').replace(/\t{2,}/g, '\t')
+    }
+
+    // Try to identify any possible currency amounts "Sale: 4000" or "Sale now 3000 Kc", can help with the training.
+    const hasDigitCurrency = (/\d/.test(text.slice(0, 6)) || /\d/.test(text.slice(-6)) ) &&  /([€£$¥₩₹]|USD|AUD|EUR|Kč|kr|SEK|,–)/.test(text) ;
+    const computedStyle = window.getComputedStyle(element);
 
     size_pos.push({
         xpath: xpath_result,
@@ -171,9 +183,16 @@ visibleElementsArray.forEach(function (element) {
         height: Math.round(bbox['height']),
         left: Math.floor(bbox['left']),
         top: Math.floor(bbox['top']) + scroll_y,
+        // tagName used by Browser Steps
         tagName: (element.tagName) ? element.tagName.toLowerCase() : '',
+        // tagtype used by Browser Steps
         tagtype: (element.tagName.toLowerCase() === 'input' && element.type) ? element.type.toLowerCase() : '',
-        isClickable: window.getComputedStyle(element).cursor == "pointer"
+        isClickable: computedStyle.cursor === "pointer",
+        // Used by the keras trainer
+        fontSize: computedStyle.getPropertyValue('font-size'),
+        fontWeight: computedStyle.getPropertyValue('font-weight'),
+        hasDigitCurrency: hasDigitCurrency,
+        label: label,
     });
 
 });
@@ -182,6 +201,7 @@ visibleElementsArray.forEach(function (element) {
 // Inject the current one set in the include_filters, which may be a CSS rule
 // used for displaying the current one in VisualSelector, where its not one we generated.
 if (include_filters.length) {
+    let results;
     // Foreach filter, go and find it on the page and add it to the results so we can visualise it again
     for (const f of include_filters) {
         bbox = false;
@@ -197,10 +217,15 @@ if (include_filters.length) {
             if (f.startsWith('/') || f.startsWith('xpath')) {
                 var qry_f = f.replace(/xpath(:|\d:)/, '')
                 console.log("[xpath] Scanning for included filter " + qry_f)
-                q = document.evaluate(qry_f, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                let xpathResult = document.evaluate(qry_f, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                results = [];
+                for (let i = 0; i < xpathResult.snapshotLength; i++) {
+                    results.push(xpathResult.snapshotItem(i));
+                }
             } else {
                 console.log("[css] Scanning for included filter " + f)
-                q = document.querySelector(f);
+                console.log("[css] Scanning for included filter " + f);
+                results = document.querySelectorAll(f);
             }
         } catch (e) {
             // Maybe catch DOMException and alert?
@@ -208,44 +233,45 @@ if (include_filters.length) {
             console.log(e);
         }
 
-        if (q) {
-            // Try to resolve //something/text() back to its /something so we can atleast get the bounding box
-            try {
-                if (typeof q.nodeName == 'string' && q.nodeName === '#text') {
-                    q = q.parentElement
-                }
-            } catch (e) {
-                console.log(e)
-                console.log("xpath_element_scraper: #text resolver")
-            }
+        if (results != null && results.length) {
 
-            // #1231 - IN the case XPath attribute filter is applied, we will have to traverse up and find the element.
-            if (typeof q.getBoundingClientRect == 'function') {
-                bbox = q.getBoundingClientRect();
-                console.log("xpath_element_scraper: Got filter element, scroll from top was " + scroll_y)
-            } else {
+            // Iterate over the results
+            results.forEach(node => {
+                // Try to resolve //something/text() back to its /something so we can atleast get the bounding box
                 try {
-                    // Try and see we can find its ownerElement
-                    bbox = q.ownerElement.getBoundingClientRect();
-                    console.log("xpath_element_scraper: Got filter by ownerElement element, scroll from top was " + scroll_y)
+                    if (typeof node.nodeName == 'string' && node.nodeName === '#text') {
+                        node = node.parentElement
+                    }
                 } catch (e) {
                     console.log(e)
-                    console.log("xpath_element_scraper: error looking up q.ownerElement")
+                    console.log("xpath_element_scraper: #text resolver")
                 }
-            }
-        }
 
-        if (!q) {
-            console.log("xpath_element_scraper: filter element " + f + " was not found");
-        }
+                // #1231 - IN the case XPath attribute filter is applied, we will have to traverse up and find the element.
+                if (typeof node.getBoundingClientRect == 'function') {
+                    bbox = node.getBoundingClientRect();
+                    console.log("xpath_element_scraper: Got filter element, scroll from top was " + scroll_y)
+                } else {
+                    try {
+                        // Try and see we can find its ownerElement
+                        bbox = node.ownerElement.getBoundingClientRect();
+                        console.log("xpath_element_scraper: Got filter by ownerElement element, scroll from top was " + scroll_y)
+                    } catch (e) {
+                        console.log(e)
+                        console.log("xpath_element_scraper: error looking up q.ownerElement")
+                    }
+                }
 
-        if (bbox && bbox['width'] > 0 && bbox['height'] > 0) {
-            size_pos.push({
-                xpath: f,
-                width: parseInt(bbox['width']),
-                height: parseInt(bbox['height']),
-                left: parseInt(bbox['left']),
-                top: parseInt(bbox['top']) + scroll_y
+                if (bbox && bbox['width'] > 0 && bbox['height'] > 0) {
+                    size_pos.push({
+                        xpath: f,
+                        width: parseInt(bbox['width']),
+                        height: parseInt(bbox['height']),
+                        left: parseInt(bbox['left']),
+                        top: parseInt(bbox['top']) + scroll_y,
+                        highlight_as_custom_filter: true
+                    });
+                }
             });
         }
     }

@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 from loguru import logger
 
+from changedetectionio.content_fetchers.helpers import capture_stitched_together_full_page, SCREENSHOT_SIZE_STITCH_THRESHOLD
 from changedetectionio.content_fetchers.base import Fetcher, manage_user_agent
 from changedetectionio.content_fetchers.exceptions import PageUnloadable, Non200ErrorCodeReceived, EmptyReply, ScreenshotUnavailable
 
@@ -58,6 +59,7 @@ class fetcher(Fetcher):
                 self.proxy['password'] = parsed.password
 
     def screenshot_step(self, step_n=''):
+        super().screenshot_step(step_n=step_n)
         screenshot = self.page.screenshot(type='jpeg', full_page=True, quality=int(os.getenv("SCREENSHOT_QUALITY", 72)))
 
         if self.browser_steps_screenshot_path is not None:
@@ -67,6 +69,7 @@ class fetcher(Fetcher):
                 f.write(screenshot)
 
     def save_step_html(self, step_n):
+        super().save_step_html(step_n=step_n)
         content = self.page.content()
         destination = os.path.join(self.browser_steps_screenshot_path, 'step_{}.html'.format(step_n))
         logger.debug(f"Saving step HTML to {destination}")
@@ -81,11 +84,13 @@ class fetcher(Fetcher):
             request_method,
             ignore_status_codes=False,
             current_include_filters=None,
-            is_binary=False):
+            is_binary=False,
+            empty_pages_are_a_change=False):
 
         from playwright.sync_api import sync_playwright
         import playwright._impl._errors
         from changedetectionio.content_fetchers import visualselector_xpath_selectors
+        import time
         self.delete_browser_steps_screenshots()
         response = None
 
@@ -128,7 +133,7 @@ class fetcher(Fetcher):
             if response is None:
                 context.close()
                 browser.close()
-                logger.debug("Content Fetcher > Response object was none")
+                logger.debug("Content Fetcher > Response object from the browser communication was none")
                 raise EmptyReply(url=url, status_code=None)
 
             try:
@@ -164,10 +169,10 @@ class fetcher(Fetcher):
 
                 raise Non200ErrorCodeReceived(url=url, status_code=self.status_code, screenshot=screenshot)
 
-            if len(self.page.content().strip()) == 0:
+            if not empty_pages_are_a_change and len(self.page.content().strip()) == 0:
+                logger.debug("Content Fetcher > Content was empty, empty_pages_are_a_change = False")
                 context.close()
                 browser.close()
-                logger.debug("Content Fetcher > Content was empty")
                 raise EmptyReply(url=url, status_code=response.status)
 
             # Run Browser Steps here
@@ -176,6 +181,7 @@ class fetcher(Fetcher):
 
             self.page.wait_for_timeout(extra_wait * 1000)
 
+            now = time.time()
             # So we can find an element on the page where its selector was entered manually (maybe not xPath etc)
             if current_include_filters is not None:
                 self.page.evaluate("var include_filters={}".format(json.dumps(current_include_filters)))
@@ -187,6 +193,8 @@ class fetcher(Fetcher):
             self.instock_data = self.page.evaluate("async () => {" + self.instock_data_js + "}")
 
             self.content = self.page.content()
+            logger.debug(f"Time to scrape xpath element data in browser {time.time() - now:.2f}s")
+
             # Bug 3 in Playwright screenshot handling
             # Some bug where it gives the wrong screenshot size, but making a request with the clip set first seems to solve it
             # JPEG is better here because the screenshots can be very very large
@@ -196,10 +204,15 @@ class fetcher(Fetcher):
             # acceptable screenshot quality here
             try:
                 # The actual screenshot - this always base64 and needs decoding! horrible! huge CPU usage
-                self.screenshot = self.page.screenshot(type='jpeg',
-                                                       full_page=True,
-                                                       quality=int(os.getenv("SCREENSHOT_QUALITY", 72)),
-                                                       )
+                full_height = self.page.evaluate("document.documentElement.scrollHeight")
+
+                if full_height >= SCREENSHOT_SIZE_STITCH_THRESHOLD:
+                    logger.warning(
+                        f"Page full Height: {full_height}px longer than {SCREENSHOT_SIZE_STITCH_THRESHOLD}px, using 'stitched screenshot method'.")
+                    self.screenshot = capture_stitched_together_full_page(self.page)
+                else:
+                    self.screenshot = self.page.screenshot(type='jpeg', full_page=True, quality=int(os.getenv("SCREENSHOT_QUALITY", 30)))
+
             except Exception as e:
                 # It's likely the screenshot was too long/big and something crashed
                 raise ScreenshotUnavailable(url=url, status_code=self.status_code)
